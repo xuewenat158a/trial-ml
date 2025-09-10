@@ -312,16 +312,26 @@ with st.expander("Permutation importance by target", expanded=False):
 with st.expander("Diagnostics: Actual vs Predicted (per target)", expanded=False):
     for i, col in enumerate(target_cols):
         fig2, ax2 = plt.subplots()
-        ax2.scatter(y_test.iloc[:, i], y_pred[:, i])
+        # scatter of predictions vs actuals
+        ax2.scatter(
+            y_test.iloc[:, i],
+            y_pred[:, i],
+            label="Data points"  # <- legend label
+        )
         ax2.set_xlabel(f"Actual {col}")
         ax2.set_ylabel(f"Predicted {col}")
         ax2.set_title(f"Actual vs Predicted — {col}")
+
+        # identity line (ideal predictions)
         mn = min(ax2.get_xlim()[0], ax2.get_ylim()[0])
         mx = max(ax2.get_xlim()[1], ax2.get_ylim()[1])
-        ax2.plot([mn, mx], [mn, mx])
+        ax2.plot([mn, mx], [mn, mx], label="Ideal (y = x)")
+
+        # show legend
+        ax2.legend(title="Legend", loc="best")
+
         st.pyplot(fig2, clear_figure=True)
 
-st.markdown("---")
 
 # ---------- Model Card ----------
 with st.expander("Model Card", expanded=True):
@@ -359,6 +369,11 @@ if do_save:
 
 # ---------- Inference (single row) ----------
 st.subheader("Try a single prediction")
+
+# init session storage for the latest single prediction
+if "single_pred_df" not in st.session_state:
+    st.session_state.single_pred_df = None
+
 with st.form("single_pred"):
     inputs = {}
     for col in feature_cols:
@@ -372,18 +387,31 @@ with st.form("single_pred"):
             series = pd.Series(X[col]).dropna()
             default_val = float(pd.to_numeric(series, errors="coerce").median()) if len(series) else 0.0
             inputs[col] = st.number_input(col, value=default_val, step=0.001, format="%.6f")
+
     submitted = st.form_submit_button("Predict")
     if submitted:
         try:
             row = pd.DataFrame([inputs])
             pred = pipe.predict(row)
-            pred_df = pd.DataFrame(pred, columns=target_cols)
-            st.write("Prediction:")
-            st.dataframe(pred_df, use_container_width=True)
-            csv = pred_df.to_csv(index=False).encode("utf-8")
-            st.download_button("Download prediction (CSV)", data=csv, file_name="single_prediction.csv", mime="text/csv")
+            st.session_state.single_pred_df = pd.DataFrame(pred, columns=target_cols)
+            st.success("Prediction ready below.")
         except Exception as e:
+            st.session_state.single_pred_df = None
             st.error(f"Prediction failed: {e}")
+
+# render results & download OUTSIDE the form
+if st.session_state.single_pred_df is not None:
+    st.write("Prediction:")
+    st.dataframe(st.session_state.single_pred_df, use_container_width=True)
+
+    csv = st.session_state.single_pred_df.to_csv(index=False).encode("utf-8")
+    st.download_button(
+        "Download prediction (CSV)",
+        data=csv,
+        file_name="single_prediction.csv",
+        mime="text/csv",
+        key="single_pred_download"
+    )
 
 # ---------- Batch Inference ----------
 st.subheader("Batch prediction (upload new rows)")
