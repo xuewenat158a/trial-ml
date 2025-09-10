@@ -24,7 +24,7 @@ with st.expander("About this app", expanded=False):
     st.markdown(
         "- Trains a multi-output Random Forest from 5 inputs to predict 6 J/CTOD targets.\n"
         "- Handles categorical features via one-hot (Sour Region, Notch Location).\n"
-        "- Shows per-target metrics, OOB R², aggregated & per-target permutation importance, diagnostics, and a Model Card.\n"
+        "- Shows per-target metrics, OOB R², aggregated & per-target permutation importance, diagnostics (with legend), and a Model Card.\n"
         "- Try a single prediction or batch-predict via upload."
     )
 
@@ -54,10 +54,17 @@ st.sidebar.markdown("---")
 do_save = st.sidebar.checkbox("Save trained model", value=True)
 model_filename = st.sidebar.text_input("Model filename", value="eca_multioutput_rf.joblib")
 
-# ---------- Constants (locked features/targets) ----------
+# ---------- Column definitions ----------
+# User-provided preview order (exact names from your sheet)
+PREVIEW_ORDER = [
+    "Sour region", "pH", "ppH2S(bara)", "K-rate", "Notch Location",
+    "J0", "J0.2", "Jmax", "CTOD0", "CTOD0.2", "CTODmax"
+]
+
+# Training (canonical) locked features/targets
 RAW_FEATURES = ["Sour region", "pH", "ppH2S(bara)", "K-rate", "Notch Location"]
 CANON_FEATURES = ["Sour Region", "pH", "ppH2S", "K-rate", "Notch Location"]  # after rename
-CATEGORICAL_FEATS = ["Sour Region", "Notch Location"]  # treat both as categorical
+CATEGORICAL_FEATS = ["Sour Region", "Notch Location"]
 TARGET_COLS_LOCKED = ["J0", "J0.2", "Jmax", "CTOD0", "CTOD0.2", "CTODmax"]
 
 # ---------- Helpers ----------
@@ -69,13 +76,19 @@ def make_ohe():
         return OneHotEncoder(handle_unknown="ignore", sparse=False)
 
 @st.cache_data(show_spinner=False)
-def load_excel(_uploaded_file, _input_path, _sheet):
+def load_excel_raw(_uploaded_file, _input_path, _sheet):
+    """Load the raw DataFrame exactly as provided (no renaming)."""
     if _uploaded_file is not None:
-        df = pd.read_excel(_uploaded_file, sheet_name=_sheet)
+        df_raw = pd.read_excel(_uploaded_file, sheet_name=_sheet)
     else:
-        df = pd.read_excel(_input_path, sheet_name=_sheet)
-    # normalize names
-    df.columns = [c.strip().replace("\u200b", "") for c in df.columns]
+        df_raw = pd.read_excel(_input_path, sheet_name=_sheet)
+    # strip hidden chars/whitespace but DO NOT rename semantic headers
+    df_raw.columns = [c.strip().replace("\u200b", "") for c in df_raw.columns]
+    return df_raw
+
+def apply_training_renames(df_raw: pd.DataFrame) -> pd.DataFrame:
+    """Return a copy with canonical names for training."""
+    df = df_raw.copy()
     rename_map = {
         "Sour region": "Sour Region",
         "ppH2S(bara)": "ppH2S",
@@ -151,13 +164,23 @@ def train_model(X, y, num_cols, cat_cols, test_size, n_estimators, random_state)
 
 # ---------- Load Data ----------
 try:
-    df = load_excel(uploaded_file, input_path, sheet_name)
+    df_raw = load_excel_raw(uploaded_file, input_path, sheet_name)
 except Exception as e:
     st.error(f"Failed to load data: {e}")
     st.stop()
 
-st.subheader("Preview data")
-st.dataframe(df.head(20), use_container_width=True)
+# PREVIEW EXACTLY WHAT YOU PROVIDED (original names & order)
+st.subheader("Preview data (as provided)")
+available_cols = [c for c in PREVIEW_ORDER if c in df_raw.columns]
+if len(available_cols) == 0:
+    st.warning("None of the expected preview columns were found. Showing first 20 rows of the file instead.")
+    st.dataframe(df_raw.head(20), use_container_width=True)
+else:
+    # keep exact order, show up to 20 rows
+    st.dataframe(df_raw.loc[:, available_cols].head(20), use_container_width=True)
+
+# Create training frame with canonical names
+df = apply_training_renames(df_raw)
 
 # ---------- Build feature/target frames (locked) ----------
 missing_feats = [c for c in CANON_FEATURES if c not in df.columns]
@@ -232,9 +255,8 @@ full_names, clean_names = get_all_feature_names(
 imp_mean = result.importances_mean
 imp_std  = result.importances_std
 
-# Build base-feature mapping
+# Base feature mapper
 def base_feature(clean):
-    # 'Sour Region_Sour' -> 'Sour Region'
     for c in cat_cols:
         if clean.startswith(c + "_"):
             return c
@@ -308,7 +330,7 @@ with st.expander("Permutation importance by target", expanded=False):
         ax_t.set_ylabel("Feature")
         st.pyplot(fig_t, clear_figure=True)
 
-# ---------- Diagnostics: Actual vs Predicted ----------
+# ---------- Diagnostics: Actual vs Predicted (with legend) ----------
 with st.expander("Diagnostics: Actual vs Predicted (per target)", expanded=False):
     for i, col in enumerate(target_cols):
         fig2, ax2 = plt.subplots()
@@ -316,7 +338,7 @@ with st.expander("Diagnostics: Actual vs Predicted (per target)", expanded=False
         ax2.scatter(
             y_test.iloc[:, i],
             y_pred[:, i],
-            label="Data points"  # <- legend label
+            label="Data points"
         )
         ax2.set_xlabel(f"Actual {col}")
         ax2.set_ylabel(f"Predicted {col}")
@@ -332,6 +354,7 @@ with st.expander("Diagnostics: Actual vs Predicted (per target)", expanded=False
 
         st.pyplot(fig2, clear_figure=True)
 
+st.markdown("---")
 
 # ---------- Model Card ----------
 with st.expander("Model Card", expanded=True):
